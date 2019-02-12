@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+
 	"os"
 	"sort"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"github.com/hashicorp/vault/command/agent/auth/gcp"
 	"github.com/hashicorp/vault/command/agent/auth/jwt"
 	"github.com/hashicorp/vault/command/agent/auth/kubernetes"
+	"github.com/hashicorp/vault/command/agent/cache"
 	"github.com/hashicorp/vault/command/agent/config"
 	"github.com/hashicorp/vault/command/agent/sink"
 	"github.com/hashicorp/vault/command/agent/sink/file"
@@ -332,9 +335,39 @@ func (c *AgentCommand) Run(args []string) int {
 		EnableReauthOnNewCredentials: config.AutoAuth.EnableReauthOnNewCredentials,
 	})
 
-	// Start things running
+	// Start auto-auth and sink servers
 	go ah.Run(ctx, method)
 	go ss.Run(ctx, ah.OutputCh, sinks)
+
+	// Parse agent listener configurations
+	var listeners []net.Listener
+	if len(config.Cache.Listeners) != 0 {
+		listeners, err = cache.ServerListeners(config.Cache.Listeners, c.logWriter, c.UI)
+		if err != nil {
+			c.UI.Error(fmt.Sprintf("Error running listeners: %v", err))
+			return 1
+		}
+	}
+
+	// Start listening to requests
+	err = cache.Run(ctx, &cache.Config{
+		Token:            c.client.Token(),
+		UseAutoAuthToken: config.Cache.UseAutoAuthToken,
+		Listeners:        listeners,
+		Logger:           c.logger.Named("cache"),
+	})
+	if err != nil {
+		c.UI.Error(fmt.Sprintf("Error starting the cache listeners: %v", err))
+		return 1
+	}
+
+	// Ensure that listeners are closed at all the exits
+	listenerCloseFunc := func() {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+	}
+	defer c.cleanupGuard.Do(listenerCloseFunc)
 
 	// Release the log gate.
 	c.logGate.Flush()

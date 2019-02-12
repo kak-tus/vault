@@ -7,6 +7,7 @@ import (
 
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
+	"github.com/hashicorp/vault/helper/contextutil"
 	"github.com/hashicorp/vault/helper/jsonutil"
 )
 
@@ -59,13 +60,6 @@ func NewAuthHandler(conf *AuthHandlerConfig) *AuthHandler {
 	return ah
 }
 
-func backoffOrQuit(ctx context.Context, backoff time.Duration) {
-	select {
-	case <-time.After(backoff):
-	case <-ctx.Done():
-	}
-}
-
 func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 	if am == nil {
 		panic("nil auth method")
@@ -116,7 +110,7 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 		path, data, err := am.Authenticate(ctx, ah.client)
 		if err != nil {
 			ah.logger.Error("error getting path or data from method", "error", err, "backoff", backoff.Seconds())
-			backoffOrQuit(ctx, backoff)
+			contextutil.BackoffOrQuit(ctx, backoff)
 			continue
 		}
 
@@ -125,7 +119,7 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 			wrapClient, err := ah.client.Clone()
 			if err != nil {
 				ah.logger.Error("error creating client for wrapped call", "error", err, "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			wrapClient.SetWrappingLookupFunc(func(string, string) string {
@@ -138,7 +132,7 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 		// Check errors/sanity
 		if err != nil {
 			ah.logger.Error("error authenticating", "error", err, "backoff", backoff.Seconds())
-			backoffOrQuit(ctx, backoff)
+			contextutil.BackoffOrQuit(ctx, backoff)
 			continue
 		}
 
@@ -146,18 +140,18 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 		case ah.wrapTTL > 0:
 			if secret.WrapInfo == nil {
 				ah.logger.Error("authentication returned nil wrap info", "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			if secret.WrapInfo.Token == "" {
 				ah.logger.Error("authentication returned empty wrapped client token", "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			wrappedResp, err := jsonutil.EncodeJSON(secret.WrapInfo)
 			if err != nil {
 				ah.logger.Error("failed to encode wrapinfo", "error", err, "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			ah.logger.Info("authentication successful, sending wrapped token to sinks and pausing")
@@ -178,12 +172,12 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 		default:
 			if secret == nil || secret.Auth == nil {
 				ah.logger.Error("authentication returned nil auth info", "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			if secret.Auth.ClientToken == "" {
 				ah.logger.Error("authentication returned empty client token", "backoff", backoff.Seconds())
-				backoffOrQuit(ctx, backoff)
+				contextutil.BackoffOrQuit(ctx, backoff)
 				continue
 			}
 			ah.logger.Info("authentication successful, sending token to sinks")
@@ -201,7 +195,7 @@ func (ah *AuthHandler) Run(ctx context.Context, am AuthMethod) {
 		})
 		if err != nil {
 			ah.logger.Error("error creating renewer, backing off and retrying", "error", err, "backoff", backoff.Seconds())
-			backoffOrQuit(ctx, backoff)
+			contextutil.BackoffOrQuit(ctx, backoff)
 			continue
 		}
 
